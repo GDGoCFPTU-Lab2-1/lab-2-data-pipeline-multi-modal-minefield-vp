@@ -1,0 +1,18 @@
+{
+  "total_sources": 5,
+  "processed": 28,
+  "passed_quality": 28,
+  "failed_quality": 0,
+  "errors": [],
+  "stage_timings_seconds": {
+    "PDF": 0.008,
+    "Transcript": 0.0,
+    "HTML": 0.016,
+    "CSV": 0.017,
+    "LegacyCode": 0.0
+  },
+  "started_at": "2026-04-24T20:31:32.279499",
+  "completed_at": "2026-04-24T20:31:32.320621",
+  "execution_time_seconds": 0.041,
+  "documents_written": 28
+}

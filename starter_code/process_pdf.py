@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from schema import UnifiedDocument
 from datetime import datetime
+from pypdf import PdfReader
 
 # ==========================================
 # ROLE 2: ETL/ELT BUILDER
@@ -30,8 +31,8 @@ def extract_pdf_data(file_path):
         # Initialize Gemini API - read from environment variable
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            print("Error: GEMINI_API_KEY environment variable not set")
-            return None
+            print("Warning: GEMINI_API_KEY environment variable not set. Falling back to local PDF extraction.")
+            return _extract_pdf_data_locally(file_path, "missing_gemini_api_key")
         
         genai.configure(api_key=api_key)
         
@@ -110,7 +111,7 @@ def extract_pdf_data(file_path):
         
     except Exception as e:
         print(f"Error extracting PDF: {str(e)}")
-        return None
+        return _extract_pdf_data_locally(file_path, f"gemini_error: {str(e)}")
 
 
 def _extract_title_from_response(response_text: str) -> str:
@@ -129,4 +130,50 @@ def _extract_author_from_response(response_text: str) -> str:
         if 'author' in line.lower():
             return line.split(':', 1)[-1].strip() if ':' in line else "Unknown"
     return "Unknown"
+
+
+def _extract_pdf_data_locally(file_path: str, fallback_reason: str):
+    """Local fallback used when Gemini credentials are unavailable."""
+    try:
+        reader = PdfReader(file_path)
+        text_pages = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                text_pages.append(page_text.strip())
+
+        extracted_text = "\n\n".join(text_pages).strip()
+        if not extracted_text:
+            extracted_text = f"PDF file {Path(file_path).name} was detected, but no text could be extracted locally."
+
+        metadata = reader.metadata or {}
+        title = metadata.title or Path(file_path).stem.replace("_", " ").replace("-", " ").title()
+        author = metadata.author or "Unknown"
+
+        doc = UnifiedDocument(
+            source_type="PDF",
+            content=extracted_text,
+            author=author,
+            title=title,
+            timestamp=datetime.now(),
+            tags=["pdf", "extracted", "local-fallback"],
+            source_metadata={
+                "file_name": Path(file_path).name,
+                "file_size_bytes": os.path.getsize(file_path),
+                "page_count": len(reader.pages),
+                "extraction_method": "pypdf-fallback",
+            },
+            processing_metadata={
+                "fallback_reason": fallback_reason,
+                "model": None,
+                "quality_note": "Gemini extraction should be used when GEMINI_API_KEY is available.",
+            },
+        )
+
+        print(f"✓ PDF extracted locally from {Path(file_path).name}")
+        return doc
+
+    except Exception as fallback_error:
+        print(f"Error extracting PDF with local fallback: {str(fallback_error)}")
+        return None
 

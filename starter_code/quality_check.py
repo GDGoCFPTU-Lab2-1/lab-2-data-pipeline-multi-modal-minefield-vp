@@ -1,168 +1,209 @@
+import math
+import re
+from typing import Any, Dict
+
+
 # ==========================================
 # ROLE 3: OBSERVABILITY & QA ENGINEER
 # ==========================================
-# Task: Implement quality gates to reject corrupt data or logic discrepancies.
+# Task: Implement semantic gates to reject corrupt data and flag hidden logic issues.
 
-def run_quality_gate(document_dict):
+MIN_CONTENT_LENGTH = 20
+
+TOXIC_PATTERNS = [
+    r"null pointer exception",
+    r"segmentation fault",
+    r"undefined is not defined",
+    r"\b(typeerror|valueerror|keyerror|attributeerror)\b",
+    r"traceback \(most recent call last\)",
+    r"\b(drop|delete|truncate)\s+table\b",
+    r"union\s+select",
+    r"<script\b",
+]
+
+
+def run_quality_gate(document_dict: Dict[str, Any]) -> bool:
     """
-    Run quality checks on a UnifiedDocument.
-    Returns True if document passes all checks, False otherwise.
-    
-    Quality Checks:
-    1. Content length >= 20 characters
-    2. No toxic/error strings (Null pointer, SQL injection patterns, etc.)
-    3. Source-specific validations
-    4. Flag discrepancies (e.g., between comments and code)
+    Return True only when the document is safe for the final knowledge base.
+    The dict may be enriched with QA metadata that the orchestrator persists.
     """
-    
-    # Check 1: Content length
-    if 'content' not in document_dict:
-        print(f"  ✗ FAIL: Missing 'content' field")
+    if "content" not in document_dict:
+        _fail("Missing 'content' field")
         return False
-    
-    content = str(document_dict.get('content', ''))
-    if len(content.strip()) < 20:
-        print(f"  ✗ FAIL: Content too short ({len(content)} chars < 20 minimum)")
+
+    content = str(document_dict.get("content", ""))
+    if len(content.strip()) < MIN_CONTENT_LENGTH:
+        _fail(f"Content too short ({len(content)} chars < {MIN_CONTENT_LENGTH} minimum)")
         return False
-    
-    # Check 2: Toxic/error strings
-    toxic_patterns = [
-        'null pointer exception',
-        'segmentation fault',
-        'undefined is not defined',
-        'typeerror',
-        'valueerror',
-        'keyerror',
-        'attributeerror',
-    ]
-    
-    content_lower = content.lower()
-    for pattern in toxic_patterns:
-        if pattern in content_lower:
-            print(f"  ⚠️  WARNING: Toxic pattern detected: '{pattern}'")
-            # Don't fail, just warn
-    
-    # Check 3: Source-specific validations
-    source_type = document_dict.get('source_type', 'Unknown')
-    
-    if source_type == 'CSV':
-        result = _validate_csv_document(document_dict)
-        if not result:
-            return False
-    
-    elif source_type == 'HTML':
-        result = _validate_html_document(document_dict)
-        if not result:
-            return False
-    
-    elif source_type == 'PDF':
-        result = _validate_pdf_document(document_dict)
-        if not result:
-            return False
-    
-    elif source_type == 'Transcript':
-        result = _validate_transcript_document(document_dict)
-        if not result:
-            return False
-    
-    elif source_type == 'LegacyCode':
-        result = _validate_legacy_code_document(document_dict)
-        if not result:
-            return False
-    
-    # If all checks pass
-    print(f"  ✓ PASS: {source_type} document passed quality gate")
+
+    toxic_hits = _find_toxic_patterns(content)
+    if toxic_hits:
+        _fail(f"Toxic/corrupt content detected: {', '.join(toxic_hits)}")
+        return False
+
+    source_type = document_dict.get("source_type", "Unknown")
+    validators = {
+        "CSV": _validate_csv_document,
+        "HTML": _validate_html_document,
+        "PDF": _validate_pdf_document,
+        "Transcript": _validate_transcript_document,
+        "Video": _validate_transcript_document,
+        "LegacyCode": _validate_legacy_code_document,
+    }
+
+    validator = validators.get(source_type)
+    if validator and not validator(document_dict):
+        return False
+
+    _mark_quality_status(document_dict, "passed")
+    print(f"  PASS: {source_type} document passed quality gate")
     return True
 
 
-def _validate_csv_document(document_dict) -> bool:
-    """Validate CSV-specific fields."""
-    metadata = document_dict.get('source_metadata', {})
-    
-    # Check if key fields are present
-    required_fields = ['record_id', 'product_name', 'price_normalized']
+def _validate_csv_document(document_dict: Dict[str, Any]) -> bool:
+    metadata = document_dict.get("source_metadata", {})
+
+    required_fields = ["record_id", "product_name", "price_normalized"]
     for field in required_fields:
         if field not in metadata:
-            print(f"  ✗ FAIL (CSV): Missing required field '{field}'")
+            _fail(f"CSV missing required field '{field}'")
             return False
-    
-    # Check if price is reasonable (if normalized)
-    price = metadata.get('price_normalized')
+
+    price = metadata.get("price_normalized")
+    if not _is_valid_optional_number(price):
+        _fail(f"CSV invalid price value: {price}")
+        return False
+
+    original_price = str(metadata.get("price_original", "")).strip()
+    price_correction = metadata.get("price_correction_applied")
+    if original_price.startswith("-") and price_correction != "negative_to_absolute":
+        _fail(f"CSV negative original price detected: {original_price}")
+        return False
+
     if price is not None and price < 0:
-        print(f"  ✗ FAIL (CSV): Negative price detected: {price}")
+        _fail(f"CSV negative price detected: {price}")
         return False
-    
+
+    stock = metadata.get("stock_quantity")
+    if not _is_valid_optional_number(stock) or (stock is not None and stock < 0):
+        _fail(f"CSV invalid stock quantity: {stock}")
+        return False
+
     return True
 
 
-def _validate_html_document(document_dict) -> bool:
-    """Validate HTML-specific fields."""
-    metadata = document_dict.get('source_metadata', {})
-    
-    # Check for key product fields
-    if 'product_id' not in metadata or 'product_name' not in metadata:
-        print(f"  ✗ FAIL (HTML): Missing product identification")
+def _validate_html_document(document_dict: Dict[str, Any]) -> bool:
+    metadata = document_dict.get("source_metadata", {})
+
+    if "product_id" not in metadata or "product_name" not in metadata:
+        _fail("HTML missing product identification")
         return False
-    
-    # Check stock quantity is non-negative
-    stock = metadata.get('stock_quantity', 0)
-    if stock < 0:
-        print(f"  ✗ FAIL (HTML): Negative stock quantity: {stock}")
+
+    stock = metadata.get("stock_quantity", 0)
+    if not _is_valid_optional_number(stock) or stock < 0:
+        _fail(f"HTML invalid stock quantity: {stock}")
         return False
-    
+
     return True
 
 
-def _validate_pdf_document(document_dict) -> bool:
-    """Validate PDF-specific fields."""
-    metadata = document_dict.get('source_metadata', {})
-    
-    # PDF should have file_name
-    if 'file_name' not in metadata:
-        print(f"  ✗ WARNING (PDF): Missing file_name metadata")
-    
-    # Content should be substantial for PDF
-    content = str(document_dict.get('content', ''))
+def _validate_pdf_document(document_dict: Dict[str, Any]) -> bool:
+    metadata = document_dict.get("source_metadata", {})
+
+    if "file_name" not in metadata:
+        _warn("PDF missing file_name metadata")
+
+    content = str(document_dict.get("content", ""))
     if len(content) < 50:
-        print(f"  ✗ FAIL (PDF): PDF content too short ({len(content)} chars)")
+        _fail(f"PDF content too short ({len(content)} chars)")
         return False
-    
+
     return True
 
 
-def _validate_transcript_document(document_dict) -> bool:
-    """Validate Transcript-specific fields."""
-    metadata = document_dict.get('source_metadata', {})
-    
-    # Check if transcript was cleaned (should have noise_removal flag)
-    processing = document_dict.get('processing_metadata', {})
-    if 'noise_removal' not in processing:
-        print(f"  ✗ FAIL (Transcript): Transcript not properly cleaned")
+def _validate_transcript_document(document_dict: Dict[str, Any]) -> bool:
+    metadata = document_dict.get("source_metadata", {})
+    content = str(document_dict.get("content", ""))
+    processing = document_dict.get("processing_metadata", {})
+
+    if "noise_removal" not in processing:
+        _fail("Transcript not properly cleaned")
         return False
-    
-    # Check if speakers were identified
-    speakers = metadata.get('speakers', [])
+
+    has_timestamp = re.search(r"\[\d{2}:\d{2}:\d{2}\]", content)
+    has_noise = re.search(r"\[(music|inaudible|laughter|applause)", content, re.IGNORECASE)
+    if has_timestamp or has_noise:
+        _fail("Transcript still contains timestamp/noise tokens")
+        return False
+
+    speakers = metadata.get("speakers", [])
     if not speakers:
-        print(f"  ⚠️  WARNING (Transcript): No speakers identified")
-    
+        _warn("Transcript has no speakers identified")
+
+    detected_price = metadata.get("detected_price_vnd")
+    extracted_prices = metadata.get("extracted_prices_vnd", {})
+    if detected_price is None and isinstance(extracted_prices, dict) and extracted_prices:
+        detected_price = next(iter(extracted_prices.values()))
+        metadata["detected_price_vnd"] = detected_price
+
+    if detected_price is not None and (not _is_valid_optional_number(detected_price) or detected_price <= 0):
+        _fail(f"Transcript invalid detected price: {detected_price}")
+        return False
+
     return True
 
 
-def _validate_legacy_code_document(document_dict) -> bool:
-    """Validate LegacyCode-specific fields and check for discrepancies."""
-    metadata = document_dict.get('source_metadata', {})
-    content = str(document_dict.get('content', ''))
-    
-    # Check if business rules were extracted
-    rules = metadata.get('business_rules', [])
-    if not rules:
-        print(f"  ⚠️  WARNING (LegacyCode): No business rules extracted")
-    
-    # Check if warnings were extracted (especially discrepancies)
-    warnings = metadata.get('warnings', [])
-    if warnings:
-        print(f"  ⚠️  WARNING (LegacyCode): Found {len(warnings)} potential discrepancies")
-        for warning in warnings[:3]:  # Show first 3
-            print(f"     - {warning}")
-    
+def _validate_legacy_code_document(document_dict: Dict[str, Any]) -> bool:
+    metadata = document_dict.get("source_metadata", {})
+    content = str(document_dict.get("content", ""))
+
+    if not metadata.get("business_rules"):
+        _warn("LegacyCode has no business rules extracted")
+
+    discrepancies = list(metadata.get("discrepancies", []))
+    warnings = metadata.get("warnings", [])
+
+    if "8%" in content and ("0.10" in content or "10%" in content):
+        discrepancies.append("legacy_tax_calc comment says 8% but code applies 10% VAT")
+
+    if any("discrepancy" in str(item).lower() or "misleading" in str(item).lower() for item in warnings):
+        discrepancies.append("Legacy code contains misleading/discrepancy warning comments")
+
+    if discrepancies:
+        unique_discrepancies = sorted(set(discrepancies))
+        metadata["discrepancies"] = unique_discrepancies
+        _warn(f"LegacyCode discrepancies flagged: {len(unique_discrepancies)}")
+
     return True
+
+
+def _find_toxic_patterns(content: str) -> list:
+    hits = []
+    for pattern in TOXIC_PATTERNS:
+        if re.search(pattern, content, flags=re.IGNORECASE):
+            hits.append(pattern)
+    return hits
+
+
+def _is_valid_optional_number(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number)
+
+
+def _mark_quality_status(document_dict: Dict[str, Any], status: str) -> None:
+    document_dict.setdefault("processing_metadata", {})["quality_gate"] = status
+
+
+def _fail(message: str) -> None:
+    print(f"  FAIL: {message}")
+
+
+def _warn(message: str) -> None:
+    print(f"  WARN: {message}")

@@ -36,6 +36,7 @@ def process_sales_csv(file_path):
     
     # --- STEP 2: Clean and normalize 'price' column ---
     df['price_normalized'] = df['price'].apply(_normalize_price)
+    df['price_correction'] = df['price'].apply(_detect_price_correction)
     
     # Filter out rows where price couldn't be normalized (optional - for quality control)
     # For now, we'll keep them but flag them
@@ -59,6 +60,7 @@ def process_sales_csv(file_path):
             category = str(row['category'])
             price_normalized = row['price_normalized']
             price_original = str(row['price'])
+            price_correction = row['price_correction']
             currency = str(row['currency'])
             date_normalized = row['date_normalized']
             seller_id = str(row['seller_id'])
@@ -73,6 +75,9 @@ def process_sales_csv(file_path):
                 content += f" → Normalized: {price_normalized}\n"
             else:
                 content += " → Could not normalize price\n"
+
+            if price_correction:
+                content += f"Price Correction: {price_correction}\n"
             
             content += f"Sale Date: {date_normalized}\n"
             content += f"Seller: {seller_id}\n"
@@ -92,6 +97,7 @@ def process_sales_csv(file_path):
                     "category": category,
                     "price_original": price_original,
                     "price_normalized": price_normalized,
+                    "price_correction_applied": price_correction,
                     "currency": currency,
                     "date_of_sale": date_normalized.isoformat() if date_normalized else None,
                     "seller_id": seller_id,
@@ -100,7 +106,7 @@ def process_sales_csv(file_path):
                 processing_metadata={
                     "source": "csv_sales",
                     "row_index": int(idx),
-                    "price_extraction_status": "success" if price_normalized is not None else "warning",
+                    "price_extraction_status": "corrected" if price_correction else ("success" if price_normalized is not None else "warning"),
                     "date_extraction_status": "success" if date_normalized is not None else "warning"
                 }
             )
@@ -138,13 +144,25 @@ def _normalize_price(price_str) -> float:
     
     # Extract numbers
     try:
-        match = re.search(r'(\d+\.?\d*)', cleaned)
+        match = re.search(r'-?\d+\.?\d*', cleaned)
         if match:
-            return float(match.group(1))
+            return abs(float(match.group(0)))
     except (ValueError, AttributeError):
         pass
     
     return None
+
+
+def _detect_price_correction(price_str) -> str:
+    """Return correction label for recoverable price data issues."""
+    if pd.isna(price_str):
+        return ""
+
+    cleaned = str(price_str).strip()
+    if cleaned.startswith("-"):
+        return "negative_to_absolute"
+
+    return ""
 
 
 def _normalize_date(date_str) -> datetime:
