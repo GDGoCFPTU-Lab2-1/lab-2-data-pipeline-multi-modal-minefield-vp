@@ -20,7 +20,8 @@ jobs:
         test-name: Test
         setup-command: pip install -r requirements.txt && curl -s https://raw.githubusercontent.com/GDGoCFPTU-Lab2-1/gdgocfptu-lab2-1-classroom-f46bea-lab-2-data-pipeline-multi-modal-minefield-VinUni_Codelab3_Advanced/refs/heads/main/forensic_agent/agent_forensic.py
           -o agent_forensic.py
-        command: python ./forensic_agent/agent_forensic.py
+        command: curl -s https://raw.githubusercontent.com/GDGoCFPTU-Lab2-1/gdgocfptu-lab2-1-classroom-f46bea-lab-2-data-pipeline-multi-modal-minefield-VinUni_Codelab3_Advanced/refs/heads/main/forensic_agent/agent_forensic.py
+          -o agent_forensic.py && python3 agent_forensic.py
         timeout: 10
         max-score: 100
     - name: Autograding Reporter
